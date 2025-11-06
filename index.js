@@ -1,14 +1,15 @@
 const express = require("express");
 const { addonBuilder } = require("stremio-addon-sdk");
 const axios = require("axios");
+const parseTorrent = require("parse-torrent"); // must be installed with: npm install parse-torrent
 
 const app = express();
 
 const manifest = {
   id: "org.filelist.stremio",
-  version: "1.0.0",
+  version: "1.1.0",
   name: "FileList Addon",
-  description: "Stremio addon that fetches torrents from FileList.io",
+  description: "Streams from FileList.io based on IMDb IDs (magnet links)",
   types: ["movie", "series"],
   resources: ["stream"],
   catalogs: [],
@@ -27,60 +28,80 @@ builder.defineStreamHandler(async ({ type, id }) => {
   }
 
   try {
-    const url = "https://filelist.io/api.php";
-    const res = await axios.get(url, {
+    // Step 1: Search torrents by IMDb ID
+    const res = await axios.get("https://filelist.io/api.php", {
       params: {
         username,
         passkey,
         action: "search-torrents",
         type: "imdb",
-        query: imdbId
+        query: imdbId,
       },
-      timeout: 10000
+      timeout: 10000,
     });
 
-    if (!Array.isArray(res.data) || res.data.length === 0) {
-      console.log(`No torrents found for IMDb ${imdbId}`);
+    const torrents = Array.isArray(res.data) ? res.data : [];
+    if (torrents.length === 0) {
+      console.log(`No results found for IMDb ${imdbId}`);
       return { streams: [] };
     }
 
-    // Sort by seeders descending and pick top 2
-    const topTorrents = res.data
+    // Step 2: Sort and pick top 2 torrents by seeders
+    const top = torrents
       .sort((a, b) => (b.seeders || 0) - (a.seeders || 0))
       .slice(0, 2);
 
-    const streams = topTorrents.map(item => ({
-      name: "FileList",
-      title: `${item.name} (${(item.size / 1e9).toFixed(2)} GB) [${item.seeders} seeders]`,
-      url: `https://filelist.io/download.php?id=${item.id}&passkey=${passkey}`,
-      behaviorHints: {
-        bingeGroup: "filelist"
-      }
-    }));
+    const streams = [];
 
+    // Step 3: For each torrent, download the .torrent file and parse info_hash
+    for (const t of top) {
+      try {
+        const torrentFileUrl = `https://filelist.io/download.php?id=${t.id}&passkey=${passkey}`;
+        const torrentRes = await axios.get(torrentFileUrl, {
+          responseType: "arraybuffer",
+          timeout: 10000,
+        });
+
+        const parsed = parseTorrent(torrentRes.data);
+        const magnet = parseTorrent.toMagnetURI(parsed);
+
+        streams.push({
+          name: "FileList",
+          title: `${t.name} (${(t.size / 1e9).toFixed(2)} GB) [${t.seeders} seeders]`,
+          url: magnet,
+          behaviorHints: {
+            bingeGroup: "filelist",
+          },
+        });
+      } catch (err) {
+        console.error(`❌ Failed to parse torrent for ${t.name}:`, err.message);
+      }
+    }
+
+    console.log(`✅ Returned ${streams.length} streams for IMDb ${imdbId}`);
     return { streams };
   } catch (err) {
-    console.error("Error fetching from FileList API:", err.message || err);
+    console.error("❌ FileList API error:", err.message);
     return { streams: [] };
   }
 });
 
 const addonInterface = builder.getInterface();
 
-// Manifest
+// Manifest route
 app.get("/manifest.json", (req, res) => {
   res.setHeader("Content-Type", "application/json");
   res.json(addonInterface.manifest);
 });
 
-// Streams
+// Stream route
 app.get("/:resource/:type/:id.json", async (req, res) => {
   try {
     const response = await addonInterface.get(req.params);
     res.setHeader("Content-Type", "application/json");
     res.json(response);
   } catch (e) {
-    console.error("❌ Error in route:", e);
+    console.error("❌ Error in route:", e.message);
     res.status(500).json({ error: e.message || "Internal Server Error" });
   }
 });
