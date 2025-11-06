@@ -4,9 +4,9 @@ const axios = require("axios");
 
 const manifest = {
   id: "org.filelist.stremio",
-  version: "1.0.0",
-  name: "Filelist Addon",
-  description: "Addon Stremio care aduce torrente de pe filelist.io",
+  version: "1.0.1",
+  name: "FileList Addon",
+  description: "Torrente de pe filelist.io pentru filme și seriale",
   types: ["movie", "series"],
   resources: ["stream"],
   catalogs: [],
@@ -37,25 +37,38 @@ builder.defineStreamHandler(async ({ type, id }) => {
     });
 
     const torrents = Array.isArray(res.data) ? res.data : [];
-    const streams = torrents.map(item => ({
+
+    // Filter torrents with no seeders
+    const filtered = torrents.filter(t => t.seeders > 0);
+
+    // Sort by seeders descending
+    filtered.sort((a, b) => b.seeders - a.seeders);
+
+    const formatSize = bytes => {
+      const gb = bytes / (1024 ** 3);
+      if (gb >= 1) return `${gb.toFixed(2)} GB`;
+      return `${(bytes / (1024 ** 2)).toFixed(1)} MB`;
+    };
+
+    const streams = filtered.map(item => ({
       name: "FileList",
-      title: `${item.name} (${(item.size / (1024 ** 3)).toFixed(2)} GB) [${item.seeders} seeders]`,
+      title: `${item.name} (${formatSize(item.size)}) [${item.seeders} seeders]`,
       url: item.download_link,
       behaviorHints: { bingeGroup: "filelist" },
     }));
 
-    console.log(`✅ Found ${streams.length} torrents for ${id}`);
+    console.log(`✅ ${streams.length} torrents found for ${id}`);
     return { streams };
   } catch (e) {
-    console.error("❌ Eroare FileList API:", e.message || e);
+    console.error("❌ FileList API error:", e.message || e);
     return { streams: [] };
   }
 });
 
 const addonInterface = builder.getInterface();
 
-// Use built-in helper for Express routing
+// Serve using official SDK HTTP helper
 const app = express();
 serveHTTP(addonInterface, { prefix: "/", port: process.env.PORT || 8080, app });
 
-console.log(`🚀 FileList Stremio addon running on port ${process.env.PORT || 8080}`);
+console.log(`🚀 FileList addon is live on port ${process.env.PORT || 8080}`);
