@@ -4,15 +4,19 @@ const axios = require("axios");
 
 const manifest = {
   id: "org.filelist.stremio",
-  version: "1.0.1",
+  version: "1.0.2",
   name: "FileList Addon",
-  description: "Torrente de pe filelist.io pentru filme și seriale",
+  description: "FileList streams for movies and TV shows",
   types: ["movie", "series"],
   resources: ["stream"],
   catalogs: [],
 };
 
 const builder = new addonBuilder(manifest);
+
+// 🧩 Simple in-memory cache
+const cache = new Map();
+const CACHE_TTL = 2 * 60 * 60 * 1000; // 2 hours
 
 builder.defineStreamHandler(async ({ type, id }) => {
   const imdbId = (id || "").replace("tt", "");
@@ -24,7 +28,19 @@ builder.defineStreamHandler(async ({ type, id }) => {
     return { streams: [] };
   }
 
+  // ✅ Check cache first
+  if (cache.has(imdbId)) {
+    const cached = cache.get(imdbId);
+    if (Date.now() - cached.timestamp < CACHE_TTL) {
+      console.log(`⚡ Cache hit for ${imdbId}`);
+      return { streams: cached.data };
+    } else {
+      cache.delete(imdbId);
+    }
+  }
+
   try {
+    console.log(`🔍 Fetching torrents for ${imdbId} from FileList`);
     const res = await axios.get("https://filelist.io/api.php", {
       params: {
         username,
@@ -38,26 +54,28 @@ builder.defineStreamHandler(async ({ type, id }) => {
 
     const torrents = Array.isArray(res.data) ? res.data : [];
 
-    // Filter torrents with no seeders
-    const filtered = torrents.filter(t => t.seeders > 0);
-
-    // Sort by seeders descending
-    filtered.sort((a, b) => b.seeders - a.seeders);
+    // Filter and sort by most seeders
+    const sorted = torrents
+      .filter(t => t.seeders > 0)
+      .sort((a, b) => b.seeders - a.seeders)
+      .slice(0, 2); // ✅ only top 2
 
     const formatSize = bytes => {
       const gb = bytes / (1024 ** 3);
-      if (gb >= 1) return `${gb.toFixed(2)} GB`;
-      return `${(bytes / (1024 ** 2)).toFixed(1)} MB`;
+      return gb >= 1 ? `${gb.toFixed(2)} GB` : `${(bytes / (1024 ** 2)).toFixed(1)} MB`;
     };
 
-    const streams = filtered.map(item => ({
+    const streams = sorted.map(item => ({
       name: "FileList",
       title: `${item.name} (${formatSize(item.size)}) [${item.seeders} seeders]`,
       url: item.download_link,
       behaviorHints: { bingeGroup: "filelist" },
     }));
 
-    console.log(`✅ ${streams.length} torrents found for ${id}`);
+    // 🧠 Store in cache
+    cache.set(imdbId, { data: streams, timestamp: Date.now() });
+
+    console.log(`✅ ${streams.length} streams cached for ${imdbId}`);
     return { streams };
   } catch (e) {
     console.error("❌ FileList API error:", e.message || e);
@@ -66,9 +84,7 @@ builder.defineStreamHandler(async ({ type, id }) => {
 });
 
 const addonInterface = builder.getInterface();
-
-// Serve using official SDK HTTP helper
 const app = express();
 serveHTTP(addonInterface, { prefix: "/", port: process.env.PORT || 8080, app });
 
-console.log(`🚀 FileList addon is live on port ${process.env.PORT || 8080}`);
+console.log(`🚀 FileList addon running on port ${process.env.PORT || 8080}`);
