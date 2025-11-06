@@ -3,18 +3,12 @@
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js",
-    "dev": "nodemon index.js"
+    "start": "node index.js"
   },
   "dependencies": {
-    "axios": "^1.0.0",
-    "express": "^4.17.0",
-    "stremio-addon-sdk": "^1.6.3"
-  },
-  "devDependencies": {
-    "nodemon": "^3.0.0"
-  },
-  "engines": {
-    "node": ">=18"
+    "axios": "^1.7.0",
+    "express": "^4.19.0",
+    "stremio-addon-sdk": "^1.4.0",
+    "parse-torrent": "^9.1.4"
   }
 }
