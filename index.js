@@ -1,108 +1,92 @@
 const express = require("express");
+const { addonBuilder } = require("stremio-addon-sdk");
 const axios = require("axios");
-const { addonBuilder, serveHTTP } = require("stremio-addon-sdk");
+
+const app = express();
 
 const manifest = {
   id: "org.filelist.stremio",
-  version: "1.1.0",
+  version: "1.0.0",
   name: "FileList Addon",
-  description: "Watch movies and series from FileList.io (requires valid passkey)",
+  description: "Stremio addon that fetches torrents from FileList.io",
   types: ["movie", "series"],
   resources: ["stream"],
   catalogs: [],
 };
 
 const builder = new addonBuilder(manifest);
-const app = express();
 
-// 🧠 Simple cache to reduce API calls (max 2 hours)
-const cache = new Map();
-const CACHE_TTL = 2 * 60 * 60 * 1000;
-
-// 📦 Stream handler for movies & series
 builder.defineStreamHandler(async ({ type, id }) => {
   const imdbId = (id || "").replace("tt", "");
   const username = process.env.FILELIST_USER;
   const passkey = process.env.FILELIST_PASSKEY;
-  const baseUrl = process.env.BASE_URL || "http://localhost:8080";
 
   if (!username || !passkey) {
-    console.error("❌ Missing FILELIST_USER or FILELIST_PASSKEY env vars");
+    console.error("Missing FILELIST_USER or FILELIST_PASSKEY environment variables.");
     return { streams: [] };
   }
 
-  // ✅ Check cache
-  if (cache.has(imdbId)) {
-    const cached = cache.get(imdbId);
-    if (Date.now() - cached.timestamp < CACHE_TTL) {
-      console.log(`⚡ Cache hit for ${imdbId}`);
-      return { streams: cached.data };
-    } else cache.delete(imdbId);
-  }
-
   try {
-    console.log(`🔍 Fetching FileList results for ${imdbId}`);
-    const res = await axios.get("https://filelist.io/api.php", {
+    const url = "https://filelist.io/api.php";
+    const res = await axios.get(url, {
       params: {
         username,
         passkey,
         action: "search-torrents",
         type: "imdb",
-        query: imdbId,
+        query: imdbId
       },
-      timeout: 30000,
+      timeout: 10000
     });
 
-    const torrents = Array.isArray(res.data) ? res.data : [];
+    if (!Array.isArray(res.data) || res.data.length === 0) {
+      console.log(`No torrents found for IMDb ${imdbId}`);
+      return { streams: [] };
+    }
 
-    const sorted = torrents
-      .filter(t => t.seeders > 0)
-      .sort((a, b) => b.seeders - a.seeders)
-      .slice(0, 2); // top 2 torrents
+    // Sort by seeders descending and pick top 2
+    const topTorrents = res.data
+      .sort((a, b) => (b.seeders || 0) - (a.seeders || 0))
+      .slice(0, 2);
 
-    const formatSize = bytes => {
-      const gb = bytes / (1024 ** 3);
-      return gb >= 1 ? `${gb.toFixed(2)} GB` : `${(bytes / (1024 ** 2)).toFixed(1)} MB`;
-    };
-
-    const streams = sorted.map(item => ({
+    const streams = topTorrents.map(item => ({
       name: "FileList",
-      title: `${item.name} (${formatSize(item.size)}) [${item.seeders} seeders]`,
-      url: `${baseUrl}/torrent/${item.id}`,
-      behaviorHints: { bingeGroup: "filelist" },
+      title: `${item.name} (${(item.size / 1e9).toFixed(2)} GB) [${item.seeders} seeders]`,
+      url: `https://filelist.io/download.php?id=${item.id}&passkey=${passkey}`,
+      behaviorHints: {
+        bingeGroup: "filelist"
+      }
     }));
-
-    cache.set(imdbId, { data: streams, timestamp: Date.now() });
-    console.log(`✅ Cached ${streams.length} results for ${imdbId}`);
 
     return { streams };
   } catch (err) {
-    console.error("❌ Error fetching FileList data:", err.message);
+    console.error("Error fetching from FileList API:", err.message || err);
     return { streams: [] };
   }
 });
 
-// 🧩 Proxy torrent download (so Stremio gets a real .torrent file)
-app.get("/torrent/:id", async (req, res) => {
-  const { id } = req.params;
-  const passkey = process.env.FILELIST_PASSKEY;
-  const url = `https://filelist.io/download.php?id=${id}&passkey=${passkey}`;
+const addonInterface = builder.getInterface();
 
+// Manifest
+app.get("/manifest.json", (req, res) => {
+  res.setHeader("Content-Type", "application/json");
+  res.json(addonInterface.manifest);
+});
+
+// Streams
+app.get("/:resource/:type/:id.json", async (req, res) => {
   try {
-    const response = await axios.get(url, { responseType: "arraybuffer" });
-    res.setHeader("Content-Type", "application/x-bittorrent");
-    res.send(response.data);
-  } catch (err) {
-    console.error(`❌ Error fetching torrent ${id}:`, err.message);
-    res.status(500).send("Failed to fetch torrent file");
+    const response = await addonInterface.get(req.params);
+    res.setHeader("Content-Type", "application/json");
+    res.json(response);
+  } catch (e) {
+    console.error("❌ Error in route:", e);
+    res.status(500).json({ error: e.message || "Internal Server Error" });
   }
 });
 
-const addonInterface = builder.getInterface();
-serveHTTP(addonInterface, {
-  prefix: "/",
-  port: process.env.PORT || 8080,
-  app,
+const port = process.env.PORT || 8080;
+app.listen(port, () => {
+  console.log(`🚀 FileList Stremio addon running on port ${port}`);
+  console.log(`📄 Manifest URL: http://localhost:${port}/manifest.json`);
 });
-
-console.log(`🚀 FileList addon running on port ${process.env.PORT || 8080}`);
