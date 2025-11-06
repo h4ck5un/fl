@@ -1,8 +1,5 @@
-const express = require("express");
-const { addonBuilder } = require("stremio-addon-sdk");
+const { addonBuilder, serveHTTP } = require("stremio-addon-sdk");
 const axios = require("axios");
-
-const app = express();
 
 const manifest = {
   id: "org.filelist.stremio",
@@ -28,16 +25,14 @@ builder.defineStreamHandler(async ({ type, id }) => {
 
   try {
     const res = await axios.get("https://filelist.io/api.php", {
-      params: { username, passkey, imdb: imdbId }
+      params: { username, passkey, imdb: imdbId },
     });
 
     const torrents = res.data || [];
     const streams = (Array.isArray(torrents) ? torrents : []).map(item => ({
       name: "Filelist",
       title: `${item.name} [${item.size || "?"}]`,
-      sources: [
-        `magnet:?xt=urn:btih:${item.info_hash}&dn=${encodeURIComponent(item.name)}`
-      ]
+      url: `magnet:?xt=urn:btih:${item.info_hash}&dn=${encodeURIComponent(item.name)}`,
     }));
 
     return { streams };
@@ -49,12 +44,5 @@ builder.defineStreamHandler(async ({ type, id }) => {
 
 const addonInterface = builder.getInterface();
 
-app.get("/manifest.json", (req, res) => res.json(addonInterface.manifest));
-app.get("/:resource/:type/:id.json", (req, res) => {
-  addonInterface.get(req.params).then(resp => res.json(resp));
-});
-
-const port = process.env.PORT || 3000;
-app.listen(port, () => {
-  console.log(`🚀 Addon Filelist live pe portul ${port}`);
-});
+// Use built-in HTTP server helper
+serveHTTP(addonInterface, { port: process.env.PORT || 3000 });
